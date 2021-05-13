@@ -17,6 +17,12 @@ type Retrier struct {
 	item         Retrieable
 }
 
+// New function returns a new pointer to a Retrier struct.
+// Params:
+// retriable is an instance that implements the Retriable (a.k.a. has Exec() error function) which must not be nil
+// maxAttempt is an integer that states how many retries will be made.
+// waitDuration is an integer that states the duration in milliseconds between retries.
+// Returns a pointer to a new Retrier instances or Error.
 func New(retriable Retrieable, maxAttempt, waitDuration int) (*Retrier, error) {
 	if maxAttempt < 1 {
 		return nil, errors.New("MaxAttempt must be > 0")
@@ -62,6 +68,7 @@ func (r *Retrier) isDone() bool {
 	return (r.attempts == r.maxAttempts) || r.done
 }
 
+// Start is the function that is responsible for starting.
 func (r *Retrier) Start() {
 	go r.run()
 }
