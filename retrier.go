@@ -42,7 +42,7 @@ func New(retriable Retrieable, maxAttempt, waitDuration int) (*Retrier, error) {
 func (r *Retrier) run() {
 	duration := time.Duration(r.waitDuration) * time.Millisecond
 	t := time.NewTimer(duration)
-	for !r.done {
+	for !r.isDone() {
 		err := r.doWork()
 		if err == nil {
 			r.done = true
