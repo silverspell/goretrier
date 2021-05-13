@@ -61,3 +61,7 @@ func (r *Retrier) doWork() error {
 func (r *Retrier) isDone() bool {
 	return (r.attempts == r.maxAttempts) || r.done
 }
+
+func (r *Retrier) Start() {
+	go r.run()
+}
