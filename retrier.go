@@ -2,6 +2,7 @@ package retrier
 
 import (
 	"errors"
+	"sync"
 	"time"
 )
 
@@ -14,6 +15,7 @@ type Retrier struct {
 	attempts     int
 	waitDuration int
 	done         bool
+	err          error
 	item         Retrieable
 }
 
@@ -49,8 +51,8 @@ func (r *Retrier) run() {
 	duration := time.Duration(r.waitDuration) * time.Millisecond
 	t := time.NewTimer(duration)
 	for !r.isDone() {
-		err := r.doWork()
-		if err == nil {
+		r.err = r.doWork()
+		if r.err == nil {
 			r.done = true
 			continue
 		}
@@ -69,6 +71,27 @@ func (r *Retrier) isDone() bool {
 }
 
 // Start is the function that is responsible for starting.
-func (r *Retrier) Start() {
-	go r.run()
+func (r *Retrier) Start(wg *sync.WaitGroup, callback Callback) {
+	if wg != nil {
+		wg.Add(1)
+	}
+	go func() {
+		r.run()
+		if callback != nil {
+			callback(r)
+		}
+		if wg != nil {
+			wg.Done()
+		}
+	}()
 }
+
+func (r *Retrier) Err() error {
+	return r.err
+}
+
+func (r *Retrier) Attempts() int {
+	return r.attempts
+}
+
+type Callback func(*Retrier)
