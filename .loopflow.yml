@@ -1,0 +1,9 @@
+validation:
+  mode: devcontainer
+  commands:
+    - name: test
+      run: go test ./...
+    - name: vet
+      run: go vet ./...
+    - name: build
+      run: go build ./...
