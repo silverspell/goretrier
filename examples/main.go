@@ -38,12 +38,12 @@ func main() {
 		myTitle: "AAA",
 	}
 
-	// t is the Retriable interface, 3 is the maximum attempts, 1000 is the milliseconds delay between attempts.
+	// t is the Retrieable interface, 3 is the maximum attempts, 1000 is the milliseconds delay between attempts.
 	r, err := retrier.New(t, 3, 1000)
 	if err != nil {
 		panic(err)
 	}
-	// t2 is the Retriable interface, 5 is the maximum attempts, 500 is the milliseconds delay between attempts.
+	// t2 is the Retrieable interface, 5 is the maximum attempts, 500 is the milliseconds delay between attempts.
 	r2, err := retrier.New(t2, 5, 500)
 	if err != nil {
 		panic(err)
