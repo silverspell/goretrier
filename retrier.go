@@ -11,6 +11,7 @@ type Retrieable interface {
 }
 
 type Retrier struct {
+	mu           sync.Mutex
 	maxAttempts  int
 	attempts     int
 	waitDuration int
@@ -48,6 +49,10 @@ func New(retriable Retrieable, maxAttempt, waitDuration int) (*Retrier, error) {
 }
 
 func (r *Retrier) run() {
+	r.attempts = 0
+	r.done = false
+	r.err = nil
+
 	duration := time.Duration(r.waitDuration) * time.Millisecond
 	t := time.NewTimer(duration)
 	for !r.isDone() {
@@ -76,6 +81,8 @@ func (r *Retrier) Start(wg *sync.WaitGroup, callback Callback) {
 		wg.Add(1)
 	}
 	go func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
 		r.run()
 		if callback != nil {
 			callback(r)
