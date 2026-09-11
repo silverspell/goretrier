@@ -17,6 +17,7 @@ type Retrier struct {
 	done         bool
 	err          error
 	item         Retrieable
+	doneCh       chan struct{}
 }
 
 // New function returns a new pointer to a Retrier struct.
@@ -44,6 +45,7 @@ func New(retriable Retrieable, maxAttempt, waitDuration int) (*Retrier, error) {
 		done:         false,
 		item:         retriable,
 		attempts:     0,
+		doneCh:       make(chan struct{}),
 	}, nil
 }
 
@@ -77,6 +79,7 @@ func (r *Retrier) Start(wg *sync.WaitGroup, callback Callback) {
 	}
 	go func() {
 		r.run()
+		close(r.doneCh)
 		if callback != nil {
 			callback(r)
 		}
@@ -92,6 +95,14 @@ func (r *Retrier) Err() error {
 
 func (r *Retrier) Attempts() int {
 	return r.attempts
+}
+
+// Done returns a channel that is closed once the retry sequence started by
+// Start has completed. Receiving from it provides a deterministic way to wait
+// for completion without a fixed sleep, and establishes the happens-before
+// relationship needed to safely read Err and Attempts afterwards.
+func (r *Retrier) Done() <-chan struct{} {
+	return r.doneCh
 }
 
 type Callback func(*Retrier)

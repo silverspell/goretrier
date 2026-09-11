@@ -16,7 +16,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"time"
 
 	retrier "github.com/silverspell/goretrier"
 )
@@ -54,8 +53,11 @@ func main() {
 		panic(err)
 	}
 
-	r.Start()
-	r2.Start()
-	time.Sleep(10 * time.Second)
+	r.Start(nil, nil)
+	r2.Start(nil, nil)
+	// Done returns a channel closed when the retry sequence completes, so you
+	// can wait deterministically without a fixed sleep.
+	<-r.Done()
+	<-r2.Done()
 }
 ```
