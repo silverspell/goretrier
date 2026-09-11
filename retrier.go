@@ -17,6 +17,7 @@ type Retrier struct {
 	done         bool
 	err          error
 	item         Retrieable
+	doneCh       chan struct{}
 }
 
 // New function returns a new pointer to a Retrier struct.
@@ -44,10 +45,12 @@ func New(retriable Retrieable, maxAttempt, waitDuration int) (*Retrier, error) {
 		done:         false,
 		item:         retriable,
 		attempts:     0,
+		doneCh:       make(chan struct{}),
 	}, nil
 }
 
 func (r *Retrier) run() {
+	defer close(r.doneCh)
 	duration := time.Duration(r.waitDuration) * time.Millisecond
 	t := time.NewTimer(duration)
 	for !r.isDone() {
@@ -84,6 +87,12 @@ func (r *Retrier) Start(wg *sync.WaitGroup, callback Callback) {
 			wg.Done()
 		}
 	}()
+}
+
+// Wait blocks until the Retrier's retry loop has completed. It must be called
+// after Start. Once Wait returns, Err and Attempts may be read safely.
+func (r *Retrier) Wait() {
+	<-r.doneCh
 }
 
 func (r *Retrier) Err() error {
