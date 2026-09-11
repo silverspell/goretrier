@@ -17,6 +17,9 @@ type Retrier struct {
 	done         bool
 	err          error
 	item         Retrieable
+
+	mu      sync.Mutex
+	stateMu sync.Mutex
 }
 
 // New function returns a new pointer to a Retrier struct.
@@ -51,9 +54,14 @@ func (r *Retrier) run() {
 	duration := time.Duration(r.waitDuration) * time.Millisecond
 	t := time.NewTimer(duration)
 	for !r.isDone() {
-		r.err = r.doWork()
-		if r.err == nil {
+		err := r.doWork()
+		r.stateMu.Lock()
+		r.err = err
+		if err == nil {
 			r.done = true
+		}
+		r.stateMu.Unlock()
+		if err == nil {
 			continue
 		}
 		<-t.C
@@ -62,11 +70,15 @@ func (r *Retrier) run() {
 }
 
 func (r *Retrier) doWork() error {
+	r.stateMu.Lock()
 	r.attempts++
+	r.stateMu.Unlock()
 	return r.item.Exec()
 }
 
 func (r *Retrier) isDone() bool {
+	r.stateMu.Lock()
+	defer r.stateMu.Unlock()
 	return (r.attempts == r.maxAttempts) || r.done
 }
 
@@ -76,6 +88,15 @@ func (r *Retrier) Start(wg *sync.WaitGroup, callback Callback) {
 		wg.Add(1)
 	}
 	go func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+
+		r.stateMu.Lock()
+		r.attempts = 0
+		r.err = nil
+		r.done = false
+		r.stateMu.Unlock()
+
 		r.run()
 		if callback != nil {
 			callback(r)
@@ -87,10 +108,14 @@ func (r *Retrier) Start(wg *sync.WaitGroup, callback Callback) {
 }
 
 func (r *Retrier) Err() error {
+	r.stateMu.Lock()
+	defer r.stateMu.Unlock()
 	return r.err
 }
 
 func (r *Retrier) Attempts() int {
+	r.stateMu.Lock()
+	defer r.stateMu.Unlock()
 	return r.attempts
 }
 
