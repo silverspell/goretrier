@@ -7,8 +7,7 @@ go get github.com/silverspell/goretrier
 
 ### How-to
 
-Create a struct that implements a Retrieable interface (has an Exec () error function). 
-Then simply create a pointer of the Retrier struct using New() function and call the Start() method.
+Create a struct that implements the Retrieable interface (an Exec() error method). Then create a Retrier with New() and call its Start() method.
 
 ```go
 package main
