@@ -1,4 +1,4 @@
-## GoRetrier - A non sophisticated retry module in Golang.
+## GoRetrier - A simple retry module in Golang.
 
 ### Installation
 ```bash
