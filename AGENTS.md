@@ -62,6 +62,8 @@ contribution flow in [contributing.md](./contributing.md).
 - The pipeline prepares the task branch; the agent does not create branches.
 - During IMPLEMENTATION/FIX the agent does not commit, push, or open a PR.
   Those steps belong to the SUBMIT stage.
+- Keep each task's diff limited to its own scope; unrelated edits make review
+  and PR isolation harder.
 
 ## Validation
 
