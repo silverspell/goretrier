@@ -58,3 +58,5 @@ func main() {
 	time.Sleep(10 * time.Second)
 }
 ```
+
+LoopFlow supports policy-controlled autonomous merge for eligible changes.
