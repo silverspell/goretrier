@@ -97,4 +97,8 @@ func (r *Retrier) Attempts() int {
 	return r.attempts
 }
 
+func (r *Retrier) MaxAttempts() int {
+	return r.maxAttempts
+}
+
 type Callback func(*Retrier)
