@@ -52,15 +52,16 @@ func (r *Retrier) waitInterval() time.Duration {
 }
 
 func (r *Retrier) run() {
-	t := time.NewTimer(r.waitInterval())
 	for !r.isDone() {
 		r.err = r.doWork()
 		if r.err == nil {
 			r.done = true
-			continue
+			break
 		}
-		<-t.C
-		t.Reset(r.waitInterval())
+		if r.isDone() {
+			break
+		}
+		time.Sleep(r.waitInterval())
 	}
 }
 
