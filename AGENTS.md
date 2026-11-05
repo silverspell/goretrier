@@ -77,3 +77,45 @@ Validation runs inside the devcontainer (see `.loopflow.yml` and
 This repository currently contains no `*_test.go` files, so `go test ./...`
 reports `[no test files]`; that is not test coverage or behavioural test
 success.
+
+## LoopFlow
+
+### Build and test
+
+The canonical commands are defined in `.loopflow.yml` and run inside the
+LoopFlow devcontainer (`.devcontainer/loopflow/devcontainer.json`):
+
+```bash
+go test ./...
+go vet ./...
+go build ./...
+```
+
+### Coding conventions
+
+- Go 1.16 module `github.com/silverspell/goretrier`; the public package lives
+  in `retrier.go` as `package retrier`.
+- Keep exported API names exactly as they exist, including the intentionally
+  spelled `Retrieable` interface and `Callback` type.
+- Use `gofmt` formatting, small scoped functions, and standard-library
+  concurrency primitives (`sync`, `time`) as already used in `retrier.go`.
+- Document exported functions with Go doc comments, matching the existing
+  `New` and `Start` comments.
+- Runnable usage examples belong in `examples/main.go`.
+
+### Invariants
+
+_This section is a draft extracted from the code; violating an invariant needs
+human review._
+
+- `New` rejects `maxAttempt < 1`, `waitDuration < 1`, and a `nil` retriable.
+- A `Retrier` performs at most `maxAttempts` calls to `Retrieable.Exec()`.
+- `Start` increments a non-nil `WaitGroup`, invokes the callback after the
+  retry loop, and always calls `wg.Done()`.
+- `Err()` returns the last error from the retried work; a `nil` error means the
+  work succeeded.
+
+### ADRs
+
+No ADR directory or ADR files are present in this repository.
+
