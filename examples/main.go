@@ -49,6 +49,14 @@ func main() {
 		panic(err)
 	}
 
+	// t is the Retriable interface, 3 is the maximum attempts, 10 is the initial
+	// milliseconds delay, 2.0 is the multiplier and 100 is the maximum
+	// milliseconds delay between attempts.
+	r3, err := retrier.NewWithBackoff(t, 3, 10, 2.0, 100)
+	if err != nil {
+		panic(err)
+	}
+
 	wg := &sync.WaitGroup{}
 
 	r.Start(wg, Callback)
@@ -59,5 +67,6 @@ func main() {
 		}
 		fmt.Println("r2 task is done sucessfully")
 	})
+	r3.Start(wg, Callback)
 	wg.Wait()
 }
