@@ -2,6 +2,7 @@ package retrier
 
 import (
 	"errors"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -754,5 +755,246 @@ func TestConcurrentStopAccessors(t *testing.T) {
 	}
 	if got := task.callCount(); got > 1000 {
 		t.Errorf("Exec called %d times, want <= 1000", got)
+	}
+}
+
+func TestBackoffWaitGrowth(t *testing.T) {
+	t.Run("multiplier 2", func(t *testing.T) {
+		want := []int{100, 200, 400, 800, 1600}
+		for i, w := range want {
+			attempt := i + 1
+			if got := backoffWaitMillis(attempt, 100, 2, 10000); got != w {
+				t.Errorf("backoffWaitMillis(%d, 100, 2, 10000) = %d, want %d", attempt, got, w)
+			}
+		}
+	})
+
+	t.Run("multiplier 1.5", func(t *testing.T) {
+		want := []int{100, 150, 225}
+		for i, w := range want {
+			attempt := i + 1
+			if got := backoffWaitMillis(attempt, 100, 1.5, 10000); got != w {
+				t.Errorf("backoffWaitMillis(%d, 100, 1.5, 10000) = %d, want %d", attempt, got, w)
+			}
+		}
+	})
+}
+
+func TestBackoffWaitUpperBound(t *testing.T) {
+	const max = 1000
+	for _, attempt := range []int{2, 3, 1000} {
+		got := backoffWaitMillis(attempt, 100, 10, max)
+		if got != max {
+			t.Errorf("backoffWaitMillis(%d, 100, 10, %d) = %d, want %d", attempt, max, got, max)
+		}
+		if got > max {
+			t.Errorf("backoffWaitMillis(%d, 100, 10, %d) = %d, want <= %d", attempt, max, got, max)
+		}
+	}
+}
+
+func TestBackoffWaitOverflowSafe(t *testing.T) {
+	maxMillis := int(math.MaxInt64 / int64(time.Millisecond))
+
+	cases := []struct {
+		name       string
+		attempt    int
+		multiplier float64
+		max        int
+	}{
+		{"huge multiplier", 1000000, math.MaxFloat64, maxMillis},
+		{"multiplier 2", 1000000, 2, maxMillis},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := backoffWaitMillis(tc.attempt, 1, tc.multiplier, tc.max)
+			if got < 0 {
+				t.Errorf("backoffWaitMillis(...) = %d, want >= 0", got)
+			}
+			if got > tc.max {
+				t.Errorf("backoffWaitMillis(...) = %d, want <= %d", got, tc.max)
+			}
+			if got != tc.max {
+				t.Errorf("backoffWaitMillis(...) = %d, want %d", got, tc.max)
+			}
+		})
+	}
+}
+
+func TestNewWithBackoffWaitIntervals(t *testing.T) {
+	r, err := NewWithBackoff(&stubTask{}, 5, 100, 2, 1000)
+	if err != nil {
+		t.Fatalf("NewWithBackoff() returned unexpected error: %v", err)
+	}
+
+	want := []time.Duration{100, 200, 400, 800}
+	for i, w := range want {
+		attempt := i + 1
+		if got := r.waitIntervalForAttempt(attempt); got != w*time.Millisecond {
+			t.Errorf("waitIntervalForAttempt(%d) = %v, want %v", attempt, got, w*time.Millisecond)
+		}
+	}
+	if got := r.waitIntervalForAttempt(10); got != 1000*time.Millisecond {
+		t.Errorf("waitIntervalForAttempt(10) = %v, want %v", got, 1000*time.Millisecond)
+	}
+}
+
+func TestNewWithBackoffNoWaitAfterFinalAttempt(t *testing.T) {
+	task := &stubTask{errs: []error{errAlways}}
+
+	r, err := NewWithBackoff(task, 1, 5000, 2, 5000)
+	if err != nil {
+		t.Fatalf("NewWithBackoff() returned unexpected error: %v", err)
+	}
+
+	done := make(chan time.Duration, 1)
+	start := time.Now()
+	wg := &sync.WaitGroup{}
+	r.Start(wg, func(*Retrier) {
+		done <- time.Since(start)
+	})
+
+	select {
+	case elapsed := <-done:
+		if elapsed >= 500*time.Millisecond {
+			t.Fatalf("callback took %v; expected no wait after final failure", elapsed)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("callback not invoked within 500ms; Retrier waited after final failure")
+	}
+
+	wg.Wait()
+
+	if got := r.Attempts(); got != 1 {
+		t.Errorf("Attempts() = %d, want 1", got)
+	}
+	if r.Err() == nil {
+		t.Error("Err() = nil, want non-nil after failing attempt")
+	}
+	if got := task.callCount(); got != 1 {
+		t.Errorf("Exec called %d times, want 1", got)
+	}
+}
+
+func TestNewWithBackoffRejectsInvalidParams(t *testing.T) {
+	maxMillis := int(math.MaxInt64 / int64(time.Millisecond))
+	task := &stubTask{}
+
+	cases := []struct {
+		name       string
+		retriable  Retrieable
+		maxAttempt int
+		wait       int
+		multiplier float64
+		maxWait    int
+	}{
+		{"multiplier 1", task, 3, 100, 1, 1000},
+		{"multiplier 0", task, 3, 100, 0, 1000},
+		{"multiplier -1", task, 3, 100, -1, 1000},
+		{"multiplier NaN", task, 3, 100, math.NaN(), 1000},
+		{"multiplier +Inf", task, 3, 100, math.Inf(1), 1000},
+		{"multiplier -Inf", task, 3, 100, math.Inf(-1), 1000},
+		{"maxWait less than wait", task, 3, 100, 2, 99},
+		{"wait exceeds max millis", task, 3, maxMillis + 1, 2, maxMillis + 1},
+		{"maxWait exceeds max millis", task, 3, 100, 2, maxMillis + 1},
+		{"maxAttempt less than 1", task, 0, 100, 2, 1000},
+		{"wait less than 1", task, 3, 0, 2, 1000},
+		{"nil retriable", nil, 3, 100, 2, 1000},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, err := NewWithBackoff(tc.retriable, tc.maxAttempt, tc.wait, tc.multiplier, tc.maxWait)
+			if err == nil {
+				t.Fatalf("NewWithBackoff() error = nil, want non-nil")
+			}
+			if r != nil {
+				t.Errorf("NewWithBackoff() retrier = %v, want nil", r)
+			}
+		})
+	}
+}
+
+func TestNewWithBackoffBoundaries(t *testing.T) {
+	maxMillis := int(math.MaxInt64 / int64(time.Millisecond))
+	task := &stubTask{}
+
+	r, err := NewWithBackoff(task, 3, 100, math.Nextafter(1, 2), 100)
+	if err != nil {
+		t.Fatalf("NewWithBackoff() with multiplier just above 1 returned unexpected error: %v", err)
+	}
+	if !r.backoff {
+		t.Error("backoff = false, want true")
+	}
+	if r.multiplier != math.Nextafter(1, 2) {
+		t.Errorf("multiplier = %v, want %v", r.multiplier, math.Nextafter(1, 2))
+	}
+	if r.maxWaitDuration != 100 {
+		t.Errorf("maxWaitDuration = %d, want 100", r.maxWaitDuration)
+	}
+
+	r2, err := NewWithBackoff(task, 3, maxMillis, 2, maxMillis)
+	if err != nil {
+		t.Fatalf("NewWithBackoff() at max millis boundary returned unexpected error: %v", err)
+	}
+	if !r2.backoff {
+		t.Error("backoff = false, want true")
+	}
+	if r2.waitDuration != maxMillis {
+		t.Errorf("waitDuration = %d, want %d", r2.waitDuration, maxMillis)
+	}
+	if r2.maxWaitDuration != maxMillis {
+		t.Errorf("maxWaitDuration = %d, want %d", r2.maxWaitDuration, maxMillis)
+	}
+	if got, want := r2.waitIntervalForAttempt(1000000), time.Duration(maxMillis)*time.Millisecond; got != want {
+		t.Errorf("waitIntervalForAttempt(1000000) = %v, want %v", got, want)
+	}
+}
+
+func TestStopDuringBackoffWait(t *testing.T) {
+	task := newSignalTask(errAlways)
+
+	r, err := NewWithBackoff(task, 5, 5000, 2, 5000)
+	if err != nil {
+		t.Fatalf("NewWithBackoff() returned unexpected error: %v", err)
+	}
+
+	wg := &sync.WaitGroup{}
+	r.Start(wg, nil)
+	task.waitForCall(t)
+	r.Stop()
+	waitGroupTimeout(t, wg)
+
+	if got := task.callCount(); got != 1 {
+		t.Errorf("Exec called %d times, want 1", got)
+	}
+	if got := r.Attempts(); got != 1 {
+		t.Errorf("Attempts() = %d, want 1", got)
+	}
+	err = r.Err()
+	if !errors.Is(err, ErrStopped) {
+		t.Errorf("Err() = %v, want errors.Is ErrStopped", err)
+	}
+	if !errors.Is(err, errAlways) {
+		t.Errorf("Err() = %v, want errors.Is last error", err)
+	}
+	if !r.Stopped() {
+		t.Error("Stopped() = false, want true")
+	}
+}
+
+func TestNewFixedWaitUnchanged(t *testing.T) {
+	r, err := New(&stubTask{}, 3, 50)
+	if err != nil {
+		t.Fatalf("New() returned unexpected error: %v", err)
+	}
+	if r.backoff {
+		t.Error("backoff = true, want false for New")
+	}
+	if got := r.waitIntervalForAttempt(1); got != 50*time.Millisecond {
+		t.Errorf("waitIntervalForAttempt(1) = %v, want 50ms", got)
+	}
+	if got := r.waitIntervalForAttempt(99); got != 50*time.Millisecond {
+		t.Errorf("waitIntervalForAttempt(99) = %v, want 50ms", got)
 	}
 }

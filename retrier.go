@@ -2,6 +2,7 @@ package retrier
 
 import (
 	"errors"
+	"math"
 	"sync"
 	"time"
 )
@@ -37,18 +38,21 @@ func (e *stoppedError) Is(target error) bool {
 }
 
 type Retrier struct {
-	mu            sync.Mutex
-	maxAttempts   int
-	attempts      int
-	waitDuration  int
-	done          bool
-	err           error
-	item          Retrieable
-	lastErr       error
-	stopCh        chan struct{}
-	stopRequested bool
-	stopped       bool
-	started       bool
+	mu              sync.Mutex
+	maxAttempts     int
+	attempts        int
+	waitDuration    int
+	multiplier      float64
+	maxWaitDuration int
+	backoff         bool
+	done            bool
+	err             error
+	item            Retrieable
+	lastErr         error
+	stopCh          chan struct{}
+	stopRequested   bool
+	stopped         bool
+	started         bool
 }
 
 // New function returns a new pointer to a Retrier struct.
@@ -82,6 +86,71 @@ func New(retriable Retrieable, maxAttempt, waitDuration int) (*Retrier, error) {
 
 func (r *Retrier) waitInterval() time.Duration {
 	return time.Duration(r.waitDuration) * time.Millisecond
+}
+
+// NewWithBackoff returns a Retrier that grows the wait between attempts using
+// exponential backoff. The wait before attempt n (1-based) is
+// waitDuration * multiplier^(n-1) milliseconds, capped at maxWaitDuration.
+// There is no jitter. NewWithBackoff returns an error when maxAttempt < 1,
+// waitDuration < 1, retriable is nil, multiplier is NaN, infinite or <= 1,
+// maxWaitDuration < waitDuration, or either duration cannot be represented as
+// a time.Duration in milliseconds.
+func NewWithBackoff(retriable Retrieable, maxAttempt, waitDuration int, multiplier float64, maxWaitDuration int) (*Retrier, error) {
+	if maxAttempt < 1 {
+		return nil, errors.New("MaxAttempt must be > 0")
+	}
+
+	if waitDuration < 1 {
+		return nil, errors.New("WaitDuration shall be > 1 msec")
+	}
+
+	if retriable == nil {
+		return nil, errors.New("Instance is nil?")
+	}
+
+	if math.IsNaN(multiplier) || math.IsInf(multiplier, 0) || multiplier <= 1 {
+		return nil, errors.New("Multiplier must be a finite number > 1")
+	}
+
+	if maxWaitDuration < waitDuration {
+		return nil, errors.New("MaxWaitDuration shall be >= WaitDuration")
+	}
+
+	maxMillis := int64(math.MaxInt64) / int64(time.Millisecond)
+	if int64(waitDuration) > maxMillis || int64(maxWaitDuration) > maxMillis {
+		return nil, errors.New("WaitDuration and MaxWaitDuration shall be representable as time.Duration")
+	}
+
+	return &Retrier{
+		maxAttempts:     maxAttempt,
+		waitDuration:    waitDuration,
+		multiplier:      multiplier,
+		maxWaitDuration: maxWaitDuration,
+		backoff:         true,
+		done:            false,
+		item:            retriable,
+		attempts:        0,
+		stopCh:          make(chan struct{}),
+	}, nil
+}
+
+func backoffWaitMillis(attempt int, waitDuration int, multiplier float64, maxWaitDuration int) int {
+	w := float64(waitDuration)
+	for i := 1; i < attempt; i++ {
+		w *= multiplier
+		if w >= float64(maxWaitDuration) {
+			return maxWaitDuration
+		}
+	}
+	return int(w)
+}
+
+func (r *Retrier) waitIntervalForAttempt(attempt int) time.Duration {
+	if !r.backoff {
+		return r.waitInterval()
+	}
+	ms := backoffWaitMillis(attempt, r.waitDuration, r.multiplier, r.maxWaitDuration)
+	return time.Duration(ms) * time.Millisecond
 }
 
 func (r *Retrier) run() {
@@ -144,7 +213,7 @@ func (r *Retrier) run() {
 		}
 		r.mu.Unlock()
 
-		timer := time.NewTimer(r.waitInterval())
+		timer := time.NewTimer(r.waitIntervalForAttempt(attempt))
 		select {
 		case <-r.stopCh:
 			if !timer.Stop() {
