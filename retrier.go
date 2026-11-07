@@ -6,17 +6,49 @@ import (
 	"time"
 )
 
+// ErrStopped is returned when a Retrier is stopped before its work has either
+// succeeded or exhausted all of its attempts. The last error from the retried
+// work, if any, can be reached through errors.Is / errors.Unwrap.
+var ErrStopped = errors.New("retrier stopped")
+
 type Retrieable interface {
 	Exec() error
 }
 
+// stoppedError wraps the last error from the retried work while reporting that
+// the overall result was cancelled via ErrStopped.
+type stoppedError struct {
+	lastErr error
+}
+
+func (e *stoppedError) Error() string {
+	if e.lastErr == nil {
+		return ErrStopped.Error()
+	}
+	return ErrStopped.Error() + ": " + e.lastErr.Error()
+}
+
+func (e *stoppedError) Unwrap() error {
+	return e.lastErr
+}
+
+func (e *stoppedError) Is(target error) bool {
+	return target == ErrStopped
+}
+
 type Retrier struct {
-	maxAttempts  int
-	attempts     int
-	waitDuration int
-	done         bool
-	err          error
-	item         Retrieable
+	mu            sync.Mutex
+	maxAttempts   int
+	attempts      int
+	waitDuration  int
+	done          bool
+	err           error
+	item          Retrieable
+	lastErr       error
+	stopCh        chan struct{}
+	stopRequested bool
+	stopped       bool
+	started       bool
 }
 
 // New function returns a new pointer to a Retrier struct.
@@ -44,6 +76,7 @@ func New(retriable Retrieable, maxAttempt, waitDuration int) (*Retrier, error) {
 		done:         false,
 		item:         retriable,
 		attempts:     0,
+		stopCh:       make(chan struct{}),
 	}, nil
 }
 
@@ -52,26 +85,119 @@ func (r *Retrier) waitInterval() time.Duration {
 }
 
 func (r *Retrier) run() {
-	for !r.isDone() {
-		r.err = r.doWork()
-		if r.err == nil {
+	r.mu.Lock()
+	if r.done || r.stopped {
+		r.started = true
+		r.done = true
+		r.mu.Unlock()
+		return
+	}
+	r.started = true
+	r.mu.Unlock()
+
+	for {
+		r.mu.Lock()
+		if r.done || r.stopped {
+			r.mu.Unlock()
+			return
+		}
+		if r.stopRequested {
+			r.finalizeStoppedLocked()
+			r.mu.Unlock()
+			return
+		}
+		if r.attempts >= r.maxAttempts {
 			r.done = true
-			break
+			r.mu.Unlock()
+			return
 		}
-		if r.isDone() {
-			break
+		r.attempts++
+		attempt := r.attempts
+		r.mu.Unlock()
+
+		err := r.item.Exec()
+
+		r.mu.Lock()
+		if err == nil {
+			r.err = nil
+			r.lastErr = nil
+			r.stopped = false
+			r.done = true
+			r.mu.Unlock()
+			return
 		}
-		time.Sleep(r.waitInterval())
+
+		r.lastErr = err
+		r.err = err
+
+		if attempt >= r.maxAttempts {
+			r.done = true
+			r.stopped = false
+			r.mu.Unlock()
+			return
+		}
+
+		if r.stopRequested {
+			r.finalizeStoppedLocked()
+			r.mu.Unlock()
+			return
+		}
+		r.mu.Unlock()
+
+		timer := time.NewTimer(r.waitInterval())
+		select {
+		case <-r.stopCh:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			r.mu.Lock()
+			r.finalizeStoppedLocked()
+			r.mu.Unlock()
+			return
+		case <-timer.C:
+		}
 	}
 }
 
-func (r *Retrier) doWork() error {
-	r.attempts++
-	return r.item.Exec()
+func (r *Retrier) finalizeStoppedLocked() {
+	r.done = true
+	r.stopped = true
+	if r.lastErr != nil {
+		r.err = &stoppedError{lastErr: r.lastErr}
+		return
+	}
+	r.err = ErrStopped
 }
 
-func (r *Retrier) isDone() bool {
-	return (r.attempts == r.maxAttempts) || r.done
+// Stop requests cancellation of the retry loop. It is safe to call from any
+// goroutine, is idempotent and does not block. Once Stop has been called no new
+// Exec is started and an in-flight wait is interrupted, but a running Exec is
+// not interrupted.
+func (r *Retrier) Stop() {
+	r.mu.Lock()
+	if r.done || r.stopRequested {
+		r.mu.Unlock()
+		return
+	}
+	r.stopRequested = true
+	if !r.started {
+		r.done = true
+		r.stopped = true
+		r.err = ErrStopped
+	}
+	r.mu.Unlock()
+
+	close(r.stopCh)
+}
+
+// Stopped reports whether the Retrier's result was cancelled by Stop.
+func (r *Retrier) Stopped() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stopped
 }
 
 // Start is the function that is responsible for starting.
@@ -91,14 +217,20 @@ func (r *Retrier) Start(wg *sync.WaitGroup, callback Callback) {
 }
 
 func (r *Retrier) Err() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.err
 }
 
 func (r *Retrier) Attempts() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.attempts
 }
 
 func (r *Retrier) MaxAttempts() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.maxAttempts
 }
 
